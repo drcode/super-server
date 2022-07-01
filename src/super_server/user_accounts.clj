@@ -89,8 +89,7 @@
 (def user-account-schema {:objects   {:App      {:fields {:user      {:type :User
                                                                       :resolve #'app-user}}}
                                       :User     {:fields {:id       {:type '(non-null ID)}
-                                                          :userid   {:type '(non-null String)}
-                                                          :password {:type '(non-null String)}}}}
+                                                          :userid   {:type '(non-null String)}}}}
                           :queries   {:app {:type    :App
                                             :args    {}}}
                           :mutations {:registerUser {:type    :User

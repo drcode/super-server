@@ -40,15 +40,22 @@
       (dh/create-database config))
     (reset! db (dh/connect config))))
 
-(defn permanent-database! [db-schema]
-  (let [config        {:store      {:backend :file
-                                    :path    "ezbitmap_database"}}
+(defn permanent-database! [db-schema fname]
+  (let [config        {:store {:backend :file
+                               :path    (or fname "database")}}
         new-database? (not (dh/database-exists? config))]
     (when new-database?
       (dh/create-database config))
     (reset! db (dh/connect config))
     (dh/transact @db (datahike-schema db-schema))
     :ready))
+
+(defn query [& q]
+  (seq (dh/q `[:find ~@(distinct (filter (fn [x]
+                                           (and (symbol? x) (= (first (name x)) \?)))
+                                         (flatten q)))
+               :where ~@q]
+             @@db)))
 
 (defn resolver-names [item]
   (if (map? item)
@@ -66,6 +73,7 @@
                                            (fn [context args value]
                                              (try (fun @db context args value)
                                                   (catch Exception e
+                                                    (println (str (type e) ":" (ex-message e)))
                                                     (lr/resolve-as nil {:message (str (type e) ":" (ex-message e))}))))))))]
     (sn/modify {:objects   {nil {:fields {nil fix-resolver}}}
                 :queries   {nil fix-resolver}
@@ -156,3 +164,10 @@
 (defn cursor->eid [eid]
   (Integer. (apply str (rest eid))))
 
+(defn add-object [obj]
+  (let [{:keys [tempids]} (dh/transact @db
+                                       (filter identity
+                                               (for [[k v] obj]
+                                                 (when-not (nil? v)
+                                                   [:db/add -1 k v]))))]
+    (tempids -1)))

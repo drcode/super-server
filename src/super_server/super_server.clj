@@ -96,9 +96,12 @@
               (assoc-in context [:response :session] @session)))})
 
 (def mock-session-interceptor
-  {:name  ::fake-session
-   :enter (fn [context]
-            (assoc-in context [:request :session] {:id "user:115"}))})
+  (let [[[eid]] (query '[?e :user/userid "drcode"])]
+    {:name  ::fake-session
+     :enter (fn [context]
+              (assoc-in context [:request :session] {:id (if eid
+                                                           (str "user:" eid)
+                                                           "user:115")}))}))
 
 (defn inject [interceptors interceptor interceptor-before-name]
   (reduce (fn [acc {:keys [name]

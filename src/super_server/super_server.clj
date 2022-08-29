@@ -16,7 +16,8 @@
             [ring.middleware.session.cookie :as co]
             [clj-pid.core :as pid]
             [clojure.set :as se]
-            [super-server.user-accounts :as ua]))
+            [super-server.user-accounts :as ua]
+            [backtick :as bt]))
 
 (ti/set-level! :warn)
 
@@ -47,15 +48,28 @@
     (when new-database?
       (dh/create-database config))
     (reset! db (dh/connect config))
-    (dh/transact @db (datahike-schema db-schema))
+    (dh/transact @db #d (datahike-schema db-schema))
     :ready))
 
-(defn query [& q]
-  (seq (dh/q `[:find ~@(distinct (filter (fn [x]
+(defn unbox-entity [e]
+  (if (associative? e)
+    (:db/id e)
+    e))
+
+(defn datom-exists? [[e a v]]
+  (= (unbox-entity (a (dh/entity @@db e))) (unbox-entity v)))
+
+(defn query-helper [& q]
+  (if-let [labels (seq (distinct (filter (fn [x]
                                            (and (symbol? x) (= (first (name x)) \?)))
-                                         (flatten q)))
-               :where ~@q]
-             @@db)))
+                                         (flatten q))))]
+    (seq (dh/q `[:find  ~@labels
+                 :where ~@q]
+               @@db))
+    (every? datom-exists? q)))
+
+(defmacro query [& q]
+  `(apply query-helper (bt/template ~q)))
 
 (defn resolver-names [item]
   (if (map? item)
@@ -84,6 +98,90 @@
   (when-let [id (ua/session-user-id context)]
     (:userid (ua/user-by-id @db id))))
 
+(defn eid-by-userid [userid]
+  (let [[[eid]] (query-helper '[?e :user/userid userid])]
+    eid))
+
+(defn gather-entities-with-atts [atts]
+  (reduce (fn [acc item]
+            (reduce (fn [acc2 [eid val :as item2]]
+                      (update acc2 eid assoc item val))
+                    acc
+                    (query [?e ~item ?v])))
+          {}
+          atts))
+
+(defn database-dump []
+  (let [attributes (into {}
+                         (map (comp vec rest)
+                              (query [?e :db/ident ?n]
+                                     [?e :db/valueType ?v])))
+        entities   (gather-entities-with-atts (keys attributes))
+        relations  (for [[eid entity] entities]
+                     [eid
+                      (set (filter identity
+                                   (for [[k v] entity]
+                                     (when (and (= :db.type/ref (attributes k)) (entities v))
+                                       v))))])
+        tree       (relation-tree (sort-by first relations))]
+    (letfn [(grouped-chis [coll]
+              (into {}
+                    (for [[group members] #d (group-by (fn [[chi-id]]
+                                                         (namespace (first (keys (entities chi-id)))))
+                                                       coll)]
+                      #d (if (> (count members) 1)
+                           [(keyword (str group "s")) #d (map fun (sort-by first #d members))]
+                           #d [(keyword group) (fun (first members))]))))
+            (fun [[id chis]]
+              (into {}
+                    (concat (for [[k v] (entities id)]
+                              [(keyword (name k)) v])
+                            (grouped-chis chis))))]
+      (grouped-chis tree))))
+
+(defn relation-tree [relations]
+  (loop [result     []
+         relations  relations
+         num-misses 0]
+    (let [{:keys [more
+                  found
+                  result]} (reduce (fn [{:keys [more
+                                                found
+                                                result]
+                                         :as   acc}
+                                        [id dependencies :as item]]
+                                     (if (seq dependencies)
+                                       (if-let [[path] (seq (filter (fn [path]
+                                                                      (<= (count (se/difference dependencies (set path))) num-misses))
+                                                                    (conj result [])))]
+                                         {:more   more
+                                          :found  true
+                                          :result (conj result (conj path id))}
+                                         {:more   (conj more item)
+                                          :found  found
+                                          :result result})
+                                       {:more   more
+                                        :found  true
+                                        :result (conj result [id])}))
+                                   {:more   []
+                                    :found  false
+                                    :result result}
+                                   relations)]
+      (if (seq more)
+        (recur result
+               more
+               (if found
+                 0
+                 (inc num-misses)))
+        (reduce (fn fun [acc [cur & more :as item]]
+                  (if (seq more)
+                    (assoc acc cur (fun (acc cur) more))
+                    (assoc acc cur {})))
+                {}
+                result)))))
+
+;;(relation-tree {1 #{} 2 #{1} 3 #{2 1} 4 #{2} 5 #{} 6 #{2 5} 7 #{4}})
+
 (defonce server (atom nil))
 
 (def atomize-session-interceptor
@@ -96,12 +194,14 @@
               (assoc-in context [:response :session] @session)))})
 
 (def mock-session-interceptor
-  (let [[[eid]] (query '[?e :user/userid "drcode"])]
-    {:name  ::fake-session
-     :enter (fn [context]
-              (assoc-in context [:request :session] {:id (if eid
-                                                           (str "user:" eid)
-                                                           "user:115")}))}))
+  {:name  ::fake-session
+   :enter (fn [context]
+            (let [eid (eid-by-userid "drcode")]
+              (assoc-in context
+                        [:request :session]
+                        {:id (if eid
+                               (str "user:" eid)
+                               "user:115")})))})
 
 (defn inject [interceptors interceptor interceptor-before-name]
   (reduce (fn [acc {:keys [name]
@@ -147,9 +247,9 @@
                                                                       (= path "/graphql") (update :interceptors
                                                                                                   (fn [interceptors]
                                                                                                     (cond-> interceptors
-                                                                                                      true         (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                      local-react? (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                      true         (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
+                                                                                                      true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                                      (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                                      true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
                               true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]})))
         existing-server     (boolean @server)]
     (when existing-server

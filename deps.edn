@@ -6,5 +6,6 @@
           com.walmartlabs/lacinia-pedestal {:mvn/version "0.5.0"}
           io.replikativ/datahike           {:mvn/version "0.5.1507"}
           buddy/buddy-hashers              {:mvn/version "1.8.158"}
-          clj-pid/clj-pid                  {:mvn/version "0.1.2"}}
+          clj-pid/clj-pid                  {:mvn/version "0.1.2"}
+          backtick/backtick                {:mvn/version "0.3.4"}}
  :paths ["src"]}

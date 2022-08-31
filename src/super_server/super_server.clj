@@ -16,6 +16,8 @@
             [ring.middleware.session.cookie :as co]
             [clj-pid.core :as pid]
             [clojure.set :as se]
+            [clojure.string :as st]
+            [clojure.pprint :as pp]
             [super-server.user-accounts :as ua]
             [backtick :as bt]))
 
@@ -48,7 +50,7 @@
     (when new-database?
       (dh/create-database config))
     (reset! db (dh/connect config))
-    (dh/transact @db #d (datahike-schema db-schema))
+    (dh/transact @db (datahike-schema db-schema))
     :ready))
 
 (defn unbox-entity [e]
@@ -112,73 +114,100 @@
           atts))
 
 (defn database-dump []
-  (let [attributes (into {}
-                         (map (comp vec rest)
-                              (query [?e :db/ident ?n]
-                                     [?e :db/valueType ?v])))
-        entities   (gather-entities-with-atts (keys attributes))
-        relations  (for [[eid entity] entities]
-                     [eid
-                      (set (filter identity
-                                   (for [[k v] entity]
-                                     (when (and (= :db.type/ref (attributes k)) (entities v))
-                                       v))))])
-        tree       (relation-tree (sort-by first relations))]
+  (let [attributes   (into {}
+                           (map (comp vec rest)
+                                (query [?e :db/ident ?n]
+                                       [?e :db/valueType ?v])))
+        entity-names (set (map namespace (map first attributes)))
+        entities     (gather-entities-with-atts (keys attributes))
+        relations    (for [[eid entity] entities]
+                       [eid
+                        (set (filter identity
+                                     (for [[k v] entity]
+                                       (when (and (= :db.type/ref (attributes k)) (entities v))
+                                         (when-let [[_ k] (re-matches #"^(.+)-id$" (name k))]
+                                           (when (entity-names k)
+                                             v))))))])
+        tree         (relation-tree (reverse (sort-by first relations)))]
     (letfn [(grouped-chis [coll]
               (into {}
-                    (for [[group members] #d (group-by (fn [[chi-id]]
-                                                         (namespace (first (keys (entities chi-id)))))
-                                                       coll)]
-                      #d (if (> (count members) 1)
-                           [(keyword (str group "s")) #d (map fun (sort-by first #d members))]
-                           #d [(keyword group) (fun (first members))]))))
+                    (for [[group members] (group-by (fn [[chi-id]]
+                                                      (namespace (first (keys (entities chi-id)))))
+                                                    coll)]
+                      [(keyword "dump" group) (map fun (sort-by first members))])))
             (fun [[id chis]]
               (into {}
                     (concat (for [[k v] (entities id)]
                               [(keyword (name k)) v])
+                            [[:id id]]
                             (grouped-chis chis))))]
       (grouped-chis tree))))
 
+(defn database-dump-pp []
+  (let [prindent (fn [indent & more]
+                   (println (apply str (apply str (repeat indent "  ")) more)))
+        data     (database-dump)]
+    (letfn [(pp-items [indent typ items]
+              (if (or (= (count items) 1)
+                      (some (fn [att]
+                              (= (namespace att) "dump"))
+                            (mapcat keys items)))
+                (do (doseq [item items]
+                      (prindent (dec indent) "--" (st/upper-case (name typ)) " " (:id item))
+                      (pp-item indent item)))
+                (do (prindent (dec indent) "--" (st/upper-case (name typ)) "S")
+                    (doseq [line (rest (st/split (with-out-str (pp/print-table items)) #"\n"))]
+                      (prindent indent line)))))
+            (pp-item [indent item]
+              (let [[dumps atoms] (ut/partition-pred (fn [[k v]]
+                                                       (= (namespace k) "dump"))
+                                                     (dissoc item :id))]
+                (doseq [[k v] (sort-by (comp name first) atoms)]
+                  (prindent indent (name k) " = " v))
+                (doseq [[k v] dumps]
+                  (pp-items (inc indent) k v))))]
+      (pp-item 0 data))))
+
 (defn relation-tree [relations]
-  (loop [result     []
-         relations  relations
-         num-misses 0]
-    (let [{:keys [more
-                  found
-                  result]} (reduce (fn [{:keys [more
-                                                found
-                                                result]
-                                         :as   acc}
-                                        [id dependencies :as item]]
-                                     (if (seq dependencies)
-                                       (if-let [[path] (seq (filter (fn [path]
-                                                                      (<= (count (se/difference dependencies (set path))) num-misses))
-                                                                    (conj result [])))]
-                                         {:more   more
-                                          :found  true
-                                          :result (conj result (conj path id))}
-                                         {:more   (conj more item)
-                                          :found  found
-                                          :result result})
+(loop [result     []
+       relations  relations
+       num-misses 0]
+  (let [{:keys [more
+                found
+                result]} (reduce (fn [{:keys [more
+                                              found
+                                              result]
+                                       :as   acc}
+                                      [id dependencies :as item]]
+                                   (if (seq dependencies)
+                                     (if-let [[path] (seq (filter (fn [path]
+                                                                    (<= (count (se/difference dependencies (set path))) num-misses))
+                                                                  (conj result [])))]
                                        {:more   more
                                         :found  true
-                                        :result (conj result [id])}))
-                                   {:more   []
-                                    :found  false
-                                    :result result}
-                                   relations)]
-      (if (seq more)
-        (recur result
-               more
-               (if found
-                 0
-                 (inc num-misses)))
-        (reduce (fn fun [acc [cur & more :as item]]
-                  (if (seq more)
-                    (assoc acc cur (fun (acc cur) more))
-                    (assoc acc cur {})))
-                {}
-                result)))))
+                                        :result (conj result (conj path id))}
+                                       {:more   (conj more item)
+                                        :found  found
+                                        :result result})
+                                     {:more   more
+                                      :found  true
+                                      :result (conj result [id])}))
+                                 {:more   []
+                                  :found  false
+                                  :result result}
+                                 relations)]
+    (if (seq more)
+      (recur result
+             more
+             (if found
+               0
+               (inc num-misses)))
+      (reduce (fn fun [acc [cur & more :as item]]
+                (if (seq more)
+                  (assoc acc cur (fun (acc cur) more))
+                  (assoc acc cur {})))
+              {}
+              result)))))
 
 ;;(relation-tree {1 #{} 2 #{1} 3 #{2 1} 4 #{2} 5 #{} 6 #{2 5} 7 #{4}})
 

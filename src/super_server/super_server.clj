@@ -113,6 +113,49 @@
           {}
           atts))
 
+(defn relation-tree [relations]
+  (loop [result     []
+         relations  relations
+         num-misses 0]
+    (let [{:keys [more
+                  found
+                  result]} (reduce (fn [{:keys [more
+                                                found
+                                                result]
+                                         :as   acc}
+                                        [id dependencies :as item]]
+                                     (if (seq dependencies)
+                                       (if-let [[path] (seq (filter (fn [path]
+                                                                      (<= (count (se/difference dependencies (set path))) num-misses))
+                                                                    (conj result [])))]
+                                         {:more   more
+                                          :found  true
+                                          :result (conj result (conj path id))}
+                                         {:more   (conj more item)
+                                          :found  found
+                                          :result result})
+                                       {:more   more
+                                        :found  true
+                                        :result (conj result [id])}))
+                                   {:more   []
+                                    :found  false
+                                    :result result}
+                                   relations)]
+      (if (seq more)
+        (recur result
+               more
+               (if found
+                 0
+                 (inc num-misses)))
+        (reduce (fn fun [acc [cur & more :as item]]
+                  (if (seq more)
+                    (assoc acc cur (fun (acc cur) more))
+                    (assoc acc cur {})))
+                {}
+                result)))))
+
+;;(relation-tree {1 #{} 2 #{1} 3 #{2 1} 4 #{2} 5 #{} 6 #{2 5} 7 #{4}})
+
 (defn database-dump []
   (let [attributes   (into {}
                            (map (comp vec rest)
@@ -167,49 +210,6 @@
                 (doseq [[k v] dumps]
                   (pp-items (inc indent) k v))))]
       (pp-item 0 data))))
-
-(defn relation-tree [relations]
-(loop [result     []
-       relations  relations
-       num-misses 0]
-  (let [{:keys [more
-                found
-                result]} (reduce (fn [{:keys [more
-                                              found
-                                              result]
-                                       :as   acc}
-                                      [id dependencies :as item]]
-                                   (if (seq dependencies)
-                                     (if-let [[path] (seq (filter (fn [path]
-                                                                    (<= (count (se/difference dependencies (set path))) num-misses))
-                                                                  (conj result [])))]
-                                       {:more   more
-                                        :found  true
-                                        :result (conj result (conj path id))}
-                                       {:more   (conj more item)
-                                        :found  found
-                                        :result result})
-                                     {:more   more
-                                      :found  true
-                                      :result (conj result [id])}))
-                                 {:more   []
-                                  :found  false
-                                  :result result}
-                                 relations)]
-    (if (seq more)
-      (recur result
-             more
-             (if found
-               0
-               (inc num-misses)))
-      (reduce (fn fun [acc [cur & more :as item]]
-                (if (seq more)
-                  (assoc acc cur (fun (acc cur) more))
-                  (assoc acc cur {})))
-              {}
-              result)))))
-
-;;(relation-tree {1 #{} 2 #{1} 3 #{2 1} 4 #{2} 5 #{} 6 #{2 5} 7 #{4}})
 
 (defonce server (atom nil))
 

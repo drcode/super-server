@@ -256,7 +256,8 @@
                                    :user-accounts?}
                                  (set (keys options)))))
   (assert @db)
-  (let [session-interceptor (rm/session {:store (co/cookie-store)})
+  (let [session-interceptor (rm/session {:store        (co/cookie-store)
+                                         :cookie-attrs {:max-age 2000000}})
         schema              (cond-> schema
                               user-accounts? ua/attach-user-account-schema)
         schema              (sc/compile (fix-resolvers schema))

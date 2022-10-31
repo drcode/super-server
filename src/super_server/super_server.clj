@@ -248,7 +248,8 @@
 (defn start-server [{:keys [schema
                             local-react?
                             port
-                            user-accounts?]
+                            user-accounts?
+                            index-fun]
                      :as options}]
   (assert (empty? (se/difference #{:schema
                                    :local-react?
@@ -262,7 +263,7 @@
                               user-accounts? ua/attach-user-account-schema)
         schema              (sc/compile (fix-resolvers schema))
         servmap             (cond-> (lp/service-map schema
-                                                    (when true 
+                                                    (when false 
                                                       {:graphiql true}))
                               true               (merge {::ht/allowed-origins (constantly true)
                                                          ::ht/port            port
@@ -280,7 +281,15 @@
                                                                                                       true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
                                                                                                       (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
                                                                                                       true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
-                              true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]})))
+                              true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]}))
+                              index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]}))
+                              #_#_index-fun          (update :io.pedestal.http/routes
+                                                             (partial map
+                                                                      (fn [{:keys [path]
+                                                                            :as   route}]
+                                                                        (if (= path "/")
+                                                                          #d (first (ro/expand-routes #{["/" :get index-fun]}))
+                                                                          route)))))
         existing-server     (boolean @server)]
     (when existing-server
       (ht/stop @server))
@@ -304,3 +313,8 @@
                                                  (when-not (nil? v)
                                                    [:db/add -1 k v]))))]
     (tempids -1)))
+
+(defmacro assert [exp]
+  `(when-not ~exp
+     (ut/throw (str "assertion failed: " ~(apply str (take 300 (pr-str exp)))))))
+

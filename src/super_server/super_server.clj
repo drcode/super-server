@@ -282,14 +282,7 @@
                                                                                                       (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
                                                                                                       true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
                               true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]}))
-                              index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]}))
-                              #_#_index-fun          (update :io.pedestal.http/routes
-                                                             (partial map
-                                                                      (fn [{:keys [path]
-                                                                            :as   route}]
-                                                                        (if (= path "/")
-                                                                          #d (first (ro/expand-routes #{["/" :get index-fun]}))
-                                                                          route)))))
+                              index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]})))
         existing-server     (boolean @server)]
     (when existing-server
       (ht/stop @server))

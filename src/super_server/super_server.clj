@@ -267,7 +267,8 @@
                                                       {:graphiql true}))
                               true               (merge {::ht/allowed-origins (constantly true)
                                                          ::ht/port            port
-                                                         ::ht/host            "0.0.0.0"})
+                                                         ::ht/host            "0.0.0.0"
+                                                         ::ht/secure-headers {:content-security-policy-settings {:object-src "none"}}})
                               (not local-react?) (assoc ::ht/resource-path "public")
                               true               (update :io.pedestal.http/routes
                                                          (partial map

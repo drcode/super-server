@@ -19,56 +19,58 @@
             [clojure.string :as st]
             [clojure.pprint :as pp]
             [super-server.user-accounts :as ua]
-            [backtick :as bt]))
+            [backtick :as bt]
+            [clojure.stacktrace :as stacktrace])
+  (:import [java.io IOException]))
 
 (ti/set-level! :warn)
 
 (defonce db (atom nil))
 
 (defn datahike-schema [schema]
-  (for [[k v] schema]
-    (merge {:db/ident k}
-           (if-let [[_ s] (re-matches #"(.*)-many" (name v))]
-             {:db/valueType (keyword (str "db.type/" s))
-              :db/cardinality :db.cardinality/many}
-             {:db/valueType (keyword (str "db.type/" (name v)))
-              :db/cardinality :db.cardinality/one}))))
+(for [[k v] schema]
+  (merge {:db/ident k}
+         (if-let [[_ s] (re-matches #"(.*)-many" (name v))]
+           {:db/valueType (keyword (str "db.type/" s))
+            :db/cardinality :db.cardinality/many}
+           {:db/valueType (keyword (str "db.type/" (name v)))
+            :db/cardinality :db.cardinality/one}))))
 
 (defn empty-temp-database! [db-schema]
-  (let [id         (str "x" (rand-int 1000000))
-        config     {:store      {:backend :mem
-                                 :id      id}
-                    :initial-tx (datahike-schema db-schema)}]
-    (when-not (dh/database-exists? config)
-      (dh/create-database config))
-    (reset! db (dh/connect config))))
+(let [id         (str "x" (rand-int 1000000))
+      config     {:store      {:backend :mem
+                               :id      id}
+                  :initial-tx (datahike-schema db-schema)}]
+  (when-not (dh/database-exists? config)
+    (dh/create-database config))
+  (reset! db (dh/connect config))))
 
 (defn permanent-database! [db-schema fname]
-  (let [config        {:store {:backend :file
-                               :path    (or fname "database")}}
-        new-database? (not (dh/database-exists? config))]
-    (when new-database?
-      (dh/create-database config))
-    (reset! db (dh/connect config))
-    (dh/transact @db (datahike-schema db-schema))
-    :ready))
+(let [config        {:store {:backend :file
+                             :path    (or fname "database")}}
+      new-database? (not (dh/database-exists? config))]
+  (when new-database?
+    (dh/create-database config))
+  (reset! db (dh/connect config))
+  (dh/transact @db (datahike-schema db-schema))
+  :ready))
 
 (defn unbox-entity [e]
-  (if (associative? e)
-    (:db/id e)
-    e))
+(if (associative? e)
+  (:db/id e)
+  e))
 
 (defn datom-exists? [[e a v]]
-  (= (unbox-entity (a (dh/entity @@db e))) (unbox-entity v)))
+(= (unbox-entity (a (dh/entity @@db e))) (unbox-entity v)))
 
 (defn query-helper [& q]
-  (if-let [labels (seq (distinct (filter (fn [x]
-                                           (and (symbol? x) (= (first (name x)) \?)))
-                                         (flatten q))))]
-    (seq (dh/q `[:find  ~@labels
-                 :where ~@q]
-               @@db))
-    (every? datom-exists? q)))
+(if-let [labels (seq (distinct (filter (fn [x]
+                                         (and (symbol? x) (= (first (name x)) \?)))
+                                       (flatten q))))]
+  (seq (dh/q `[:find  ~@labels
+               :where ~@q]
+             @@db))
+  (every? datom-exists? q)))
 
 (defmacro query [& q]
   `(apply query-helper (bt/template ~q)))
@@ -232,6 +234,22 @@
                                (str "user:" eid)
                                "user:115")})))})
 
+(defn error-stylobate [{:keys [servlet-response] :as context} exception]
+  (let [cause (stacktrace/root-cause exception)]
+    (if (and (instance? IOException cause) (= "Broken pipe" (.getMessage cause)))
+      (println "Ignoring java.io.IOException: Broken pipe")
+      (io.pedestal.log/error
+       :msg "error-stylobate triggered"
+       :exception exception
+       :context context))
+    (@#'io.pedestal.http.impl.servlet-interceptor/leave-stylobate context)))
+
+(def stylobate
+  (io.pedestal.interceptor/interceptor {:name ::stylobate
+                                        :enter @#'io.pedestal.http.impl.servlet-interceptor/enter-stylobate
+                                        :leave @#'io.pedestal.http.impl.servlet-interceptor/leave-stylobate
+                                        :error error-stylobate}))
+
 (defn inject [interceptors interceptor interceptor-before-name]
   (reduce (fn [acc {:keys [name]
                     :as   item}]
@@ -257,38 +275,39 @@
                                    :user-accounts?}
                                  (set (keys options)))))
   (assert @db)
-  (let [session-interceptor (rm/session {:store        (co/cookie-store)
-                                         :cookie-attrs {:max-age 2000000}})
-        schema              (cond-> schema
-                              user-accounts? ua/attach-user-account-schema)
-        schema              (sc/compile (fix-resolvers schema))
-        servmap             (cond-> (lp/service-map schema
-                                                    (when false 
-                                                      {:graphiql true}))
-                              true               (merge {::ht/allowed-origins (constantly true)
-                                                         ::ht/port            port
-                                                         ::ht/host            "0.0.0.0"
-                                                         ::ht/secure-headers {:content-security-policy-settings {:object-src "none"}}})
-                              (not local-react?) (assoc ::ht/resource-path "public")
-                              true               (update :io.pedestal.http/routes
-                                                         (partial map
-                                                                  (fn [{:keys [path
-                                                                               interceptors]
-                                                                        :as   route}]
-                                                                    (cond-> route
-                                                                      (= path "/graphql") (update :interceptors
-                                                                                                  (fn [interceptors]
-                                                                                                    (cond-> interceptors
-                                                                                                      true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                      (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                      true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
-                              true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]}))
-                              index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]})))
-        existing-server     (boolean @server)]
-    (when existing-server
-      (ht/stop @server))
-    (reset! server (ht/start (ht/create-server servmap)))
-    :started))
+  (with-redefs [with-redefs [io.pedestal.http.impl.servlet-interceptor/stylobate stylobate]]
+    (let [session-interceptor (rm/session {:store        (co/cookie-store)
+                                           :cookie-attrs {:max-age 2000000}})
+          schema              (cond-> schema
+                                user-accounts? ua/attach-user-account-schema)
+          schema              (sc/compile (fix-resolvers schema))
+          servmap             (cond-> (lp/service-map schema
+                                                      (when false 
+                                                        {:graphiql true}))
+                                true               (merge {::ht/allowed-origins (constantly true)
+                                                           ::ht/port            port
+                                                           ::ht/host            "0.0.0.0"
+                                                           ::ht/secure-headers {:content-security-policy-settings {:object-src "none"}}})
+                                (not local-react?) (assoc ::ht/resource-path "public")
+                                true               (update :io.pedestal.http/routes
+                                                           (partial map
+                                                                    (fn [{:keys [path
+                                                                                 interceptors]
+                                                                          :as   route}]
+                                                                      (cond-> route
+                                                                        (= path "/graphql") (update :interceptors
+                                                                                                    (fn [interceptors]
+                                                                                                      (cond-> interceptors
+                                                                                                        true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                                        (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                                        true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
+                                true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]}))
+                                index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]})))
+          existing-server     (boolean @server)]
+      (when existing-server
+        (ht/stop @server))
+      (reset! server (ht/start (ht/create-server servmap)))
+      :started)))
 
 (defn parse-id [id]
   (when-let [[_ typ eid](re-matches #"^(.+):(\d+)$" id)]
@@ -311,4 +330,5 @@
 (defmacro assert [exp]
   `(when-not ~exp
      (ut/throw (str "assertion failed: " ~(apply str (take 300 (pr-str exp)))))))
+
 

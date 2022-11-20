@@ -275,7 +275,7 @@
                                    :user-accounts?}
                                  (set (keys options)))))
   (assert @db)
-  (with-redefs [with-redefs [io.pedestal.http.impl.servlet-interceptor/stylobate stylobate]]
+  (with-redefs [io.pedestal.http.impl.servlet-interceptor/stylobate stylobate]
     (let [session-interceptor (rm/session {:store        (co/cookie-store)
                                            :cookie-attrs {:max-age 2000000}})
           schema              (cond-> schema
@@ -289,20 +289,24 @@
                                                            ::ht/host            "0.0.0.0"
                                                            ::ht/secure-headers {:content-security-policy-settings {:object-src "none"}}})
                                 (not local-react?) (assoc ::ht/resource-path "public")
-                                true               (update :io.pedestal.http/routes
-                                                           (partial map
-                                                                    (fn [{:keys [path
-                                                                                 interceptors]
-                                                                          :as   route}]
-                                                                      (cond-> route
-                                                                        (= path "/graphql") (update :interceptors
-                                                                                                    (fn [interceptors]
-                                                                                                      (cond-> interceptors
-                                                                                                        true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                        (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
-                                                                                                        true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context))))))))
-                                true               (update :io.pedestal.http/routes concat (ro/expand-routes #{["/greet" :get `respond-greet]}))
-                                index-fun          (update :io.pedestal.http/routes concat (ro/expand-routes #{["/" :get index-fun]})))
+                                true (update :io.pedestal.http/routes
+                                             (fn [routes]
+                                               (set (map
+                                                     (fn [[path verb interceptors & more :as route]]
+                                                       (cond-> route
+                                                         (= path "/graphql") (assoc 2
+                                                                                    (cond-> interceptors
+                                                                                      true                              (inject session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                      (and local-react? user-accounts?) (inject mock-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)
+                                                                                      true                              (inject atomize-session-interceptor :com.walmartlabs.lacinia.pedestal/inject-app-context)))))
+                                                     routes))))
+                                true (update :io.pedestal.http/routes
+                                             conj
+                                             ["/greet" :get `respond-greet])
+                                index-fun (update :io.pedestal.http/routes
+                                                  conj
+                                                  ["/" :get index-fun])
+                                )
           existing-server     (boolean @server)]
       (when existing-server
         (ht/stop @server))

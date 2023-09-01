@@ -267,7 +267,7 @@
                             local-react?
                             port
                             user-accounts?
-                            index-fun]
+                            routes]
                      :as options}]
   (assert (empty? (se/difference #{:schema
                                    :local-react?
@@ -303,10 +303,10 @@
                                 true (update :io.pedestal.http/routes
                                              conj
                                              ["/greet" :get `respond-greet])
-                                index-fun (update :io.pedestal.http/routes
-                                                  conj
-                                                  ["/" :get index-fun])
-                                )
+                                routes (update :io.pedestal.http/routes
+                                               se/union
+                                               (set (for [[k v] routes]
+                                                      [k :get v]))))
           existing-server     (boolean @server)]
       (when existing-server
         (ht/stop @server))

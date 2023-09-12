@@ -305,8 +305,10 @@
                                              ["/greet" :get `respond-greet])
                                 routes (update :io.pedestal.http/routes
                                                se/union
-                                               (set (for [[k v] routes]
-                                                      [k :get v]))))
+                                               (set (apply concat
+                                                           (for [[k v] routes]
+                                                             [[k :get v]
+                                                              [k :post v]])))))
           existing-server     (boolean @server)]
       (when existing-server
         (ht/stop @server))

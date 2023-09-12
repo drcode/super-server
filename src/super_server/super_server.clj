@@ -307,8 +307,9 @@
                                                se/union
                                                (set (apply concat
                                                            (for [[k v] routes]
-                                                             [[k :get v]
-                                                              [k :post v]])))))
+                                                             (if (coll? v)
+                                                               [[k (first v) (second v)]]
+                                                               [k :get v]))))))
           existing-server     (boolean @server)]
       (when existing-server
         (ht/stop @server))
